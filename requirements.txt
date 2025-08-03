@@ -1,0 +1,7 @@
+ollama
+psycopg2-binary
+sqlalchemy
+pgvector
+langchain
+javalang
+tqdm
