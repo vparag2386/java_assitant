@@ -5,7 +5,10 @@ from analyzer.call_graph import CallGraphBuilder
 from db.vector_store import VectorStore
 
 def scan_java_code_for_embeddings(project_path):
-    """Scans Java files and stores code snippets into pgvector DB."""
+    """
+    Scans all Java files in the project directory,
+    generates embeddings, and stores them in the vector DB.
+    """
     vector_store = VectorStore()
 
     for root, _, files in os.walk(project_path):
@@ -23,46 +26,82 @@ def scan_java_code_for_embeddings(project_path):
     print("✅ Embedding scan complete! All code stored in java_metadata.")
 
 def build_call_graph(project_path):
-    """Builds call graph relationships and stores them in DB."""
+    """
+    Parses Java files and builds method call graph relationships.
+    """
     print("🔍 Building call graph...")
     builder = CallGraphBuilder(project_path)
     builder.scan_codebase()
     print("✅ Call graph build complete!")
 
-def save_generated_files(dev_code, base_path):
-    """Splits the code blob into files and saves them under codebase/"""
-    if not dev_code or not isinstance(dev_code, str):
+def save_generated_files(code_blob, base_path):
+    """
+    Parses the `// FILE:` markers and writes each file to disk.
+    Normalizes paths so that headers like `com/example/.../X.java`
+    are saved under `src/main/java/com/example/.../X.java`.
+    """
+    if not code_blob or not isinstance(code_blob, str):
         raise ValueError("❌ Developer did not produce any code.")
 
-    file_blocks = re.split(r"(?=// FILE:)", dev_code)
+    def normalize_rel_path(rel_path: str) -> str:
+        # unify slashes and trim
+        p = rel_path.replace("\\", "/").strip()
+        # drop any accidental leading slash
+        if p.startswith("/"):
+            p = p[1:]
+        # if the header already starts with src/main/java, keep it
+        if p.startswith("src/main/java/"):
+            return p
+        # if the header begins with a package path, prepend src/main/java/
+        if p.startswith("com/") or p.startswith("org/") or p.startswith("io/") or p.startswith("net/"):
+            return f"src/main/java/{p}"
+        # if the header is just a filename, leave it as-is (could be resources/tests etc.)
+        return p
+
+    file_blocks = re.split(r"(?=// FILE:)", code_blob)
 
     for block in file_blocks:
         if not block.strip():
             continue
-        match = re.match(r"// FILE:\s*(.+)", block)
-        if match:
-            rel_path = match.group(1).strip()
-            content = block.split("\n", 1)[1]
 
-            file_path = os.path.join(base_path, rel_path)
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content.strip())
-            print(f"💾 Code saved to: {file_path}")
-        else:
-            print(f"⚠️ Skipping block (no file marker): {block[:50]}")
+        header_match = re.match(r"// FILE:\s*(.+)", block)
+        if not header_match:
+            print(f"⚠️ Skipping block (no file marker): {block[:80]!r}")
+            continue
+
+        raw_rel_path = header_match.group(1).strip()
+        # the rest of the block after the header line
+        content = block.split("\n", 1)[1] if "\n" in block else ""
+        rel_path = normalize_rel_path(raw_rel_path)
+
+        file_path = os.path.join(base_path, rel_path)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content.strip())
+
+        print(f"💾 Code saved to: {file_path}")
+
 
 def run_orchestrator(project_path, feature_request):
-    """Runs the PM → Architect → Developer → Reviewer workflow."""
+    """
+    Runs the full workflow:
+    PM → Architect → (class-by-class) Developer → Reviewer → Save to disk.
+    """
     print(f"\n🚀 Java Assistant Console")
     print(f"📌 Feature request: {feature_request}")
 
-    dev_code = orchestrate(feature_request, model="mistral")  # or codellama, gemma, etc.
+    # Run orchestrator: now handles class-by-class loop internally
+    generated_code = orchestrate(feature_request, model="mistral")
 
-    if not dev_code:
+    if not generated_code:
         raise ValueError("❌ No code generated. Check prompts or model output.")
 
-    save_generated_files(dev_code, project_path)
+    # Save each generated file to disk
+    save_generated_files(generated_code, project_path)
+
+    # Optional: print result
+    # print("\n✅ Final Generated Code:\n")
+    # print(generated_code)
 
 if __name__ == "__main__":
     project_path = "codebase/src/main/java"
